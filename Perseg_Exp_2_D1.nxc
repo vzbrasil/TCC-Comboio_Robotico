@@ -1,0 +1,705 @@
+/*
+* Vitor Augusto Zago
+* Comboio Sensoriado e Comunicado
+* Cria o comboio (Hierarquia)
+* Segue um linha dupla sobre um plano, para ao detectar obstáculos e ao encontrar
+* a COR N 3 o comboio PARA
+*
+* Motores A e C: 
+* Sensores: Sonar IN1, OTICO IN3
+*
+* 29/06/2016
+*/
+
+//Definições básicas de Categoria comboio
+#define MESTRE 0
+#define ESCRAVO 1
+
+//NOMES
+#define ROBO_MESTRE "Mestre"
+#define ROBO_ESCRAVO "Escra_01"
+#define ROBO_ESCRAVO2 "Escra_02"
+
+// definiçõs básicas de movimento
+#define VELOCIDADE 60
+#define POT_CURVA 40
+#define CURVA_ESQUERDA 452
+#define CURVA_DIREITA 452
+#define FATORCORRECAO 10
+
+#define NUMCORES 3 // Esq, Dir, Parada
+#define ARRAYCORES 4
+
+// Definicoes de proximidade
+#define _SENSOR_SONAR IN_1
+#define LIMIAR_PROX 25
+#define LIMIAR_COR 25   // Considerar RANGE * 2
+
+// Definicoes Sensor de cor
+#define _SENSOR_COR IN_3
+#define NUMERO_LEITURAS 13
+
+// Parametros sensores
+ColorSensorReadType csrt;
+
+int UltimaCorLida = 1; // DIR
+int CORES[NUMCORES + 1]; // considerar o sem Cor
+int RGB_COR[ARRAYCORES];
+int ARRAY_COR[ARRAYCORES * NUMCORES];
+
+int ModoOperacao = 0;
+int ModoAnterior  = 0;
+
+int componenteComboio = -1;
+int numEscravos = 0;
+int enviarMensagem = 0;
+int enviarMensagemVLT = 0;
+int escravoPonta = 0; // Indica se o escravo � o escravoPonta.
+int LIG_MOTORES = 0;
+int vantagem = 0;
+
+int numTotalMsgEnviadas = 0;
+int numTotalMsgRecebidas = 0;
+int numTentativasReenvio = 0;
+int numTotalMsgNaoInt = 0;
+
+int tempoParado = 0;
+
+// Definicoes de sentido
+#define INDO 0
+#define VOLTANDO 1
+int sentido = INDO;
+
+// onde Modo de operação será a enumeracao
+// 0 = Parado
+// 1 = Andando a frente
+// 2 = Virando para a esquerda
+// 3 = Virando para a direita
+
+inline void Girar90GrausEsquerda()
+{
+  RotateMotorEx(OUT_AC, POT_CURVA, CURVA_ESQUERDA, -100, true, true);
+  ResetTachoCount(OUT_A);
+}
+
+inline void Girar135GrausEsquerda()
+{
+  Off(OUT_AC);
+  RotateMotorEx(OUT_AC, POT_CURVA, CURVA_ESQUERDA + (CURVA_ESQUERDA/2), -100, true, true);
+  ResetTachoCount(OUT_A);
+}
+
+inline void Girar90GrausDireita()
+{
+  RotateMotorEx(OUT_AC, POT_CURVA, CURVA_DIREITA, 100, true, true);
+}
+
+inline void setCor(int corNum, int val1, int val2, int val3)
+{
+  int pivo = corNum * ARRAYCORES;
+  ARRAY_COR[pivo] = val1;
+  ARRAY_COR[pivo + 1] = val2;
+  ARRAY_COR[pivo + 2] = val3;
+}
+
+inline int getCor(int val1, int val2, int val3)
+{
+  int lp;
+  for( lp = 0; lp < NUMCORES; lp++)
+  {
+    int pivo = lp * ARRAYCORES;
+    if(ARRAY_COR[pivo] - LIMIAR_COR <= val1 && val1 <= ARRAY_COR[pivo] + LIMIAR_COR){
+      if(ARRAY_COR[pivo + 1] - LIMIAR_COR <= val2 && val2 <= ARRAY_COR[pivo + 1] + LIMIAR_COR){
+        if(ARRAY_COR[pivo + 2 ] - LIMIAR_COR <= val3 && val3 <= ARRAY_COR[pivo + 2] + LIMIAR_COR){
+          return lp;
+        }
+      }
+    }
+  }
+  return lp;
+}
+
+inline int IndexValorMaximo(int array[], int numElemen)
+{
+  int lp;
+  int valorMax = 0;
+  int indexValorMax = 0;
+  for(lp = 0; lp < numElemen; lp++)
+  {
+    if(array[lp] > valorMax)
+    {
+      valorMax = array[lp];
+      indexValorMax = lp;
+    }
+  }
+
+  return indexValorMax;
+}
+
+inline void MostrarBTStatusCode(int status)
+{
+  TextOut(50, LCD_LINE1, "BT: " + NumToStr(status) + "    ");
+}
+
+inline void MostrarBTStatusCode2(int status)
+{
+  TextOut(10, LCD_LINE1, "BT: " + NumToStr(status) + "    ");
+}
+
+void LimparMensagem()
+{
+  int numConexao;
+  string mensagemDescarte = "a";
+  for(int lp = 0; lp <= 8; lp++)
+  {
+    numConexao = MAILBOX1 + lp;
+    while(StrLen(mensagemDescarte) > 0)
+      ReceiveMessage(numConexao, true, mensagemDescarte);
+    mensagemDescarte = "a";
+  }
+}
+
+CommBTConnectionType connEsc;
+bool ConectarEscravo(string nomeEscravo)
+{
+  connEsc.Name = nomeEscravo;
+  connEsc.ConnectionSlot = CONN_BT1 + numEscravos;
+  connEsc.Action = 1; // use 1 = realizar a conexao e 0 = desconectar
+  
+  int BTerrorCode = BluetoothStatus(connEsc.ConnectionSlot);
+  int resultadoConexao;
+  while(true)
+  {
+    BTerrorCode = -1;
+    int lp;
+    for (lp = 0; lp < 20; lp++) {
+      SysCommBTConnection(connEsc); // tenta se conectar 20 vezes
+      BTerrorCode = BluetoothStatus(connEsc.ConnectionSlot);
+      resultadoConexao = connEsc.Result;
+      MostrarBTStatusCode(BTerrorCode);
+      if(resultadoConexao == NO_ERR && BTerrorCode == NO_ERR)
+        break;
+      Wait(500);
+    }
+    
+    if(lp == 20)
+    {
+      return false;
+    }
+    else
+    {
+      Wait(3000); // Aguarda conexao establizizar
+      numEscravos++;
+      return true;
+    }
+  }
+}
+
+void AlterarSentido()
+{
+  if(sentido == INDO)
+  {
+    UltimaCorLida = 1;
+    sentido = VOLTANDO;
+    ModoOperacao = 2;
+  }
+  else
+  {
+    UltimaCorLida = 2;
+    sentido = INDO;
+    ModoOperacao = 2;
+  }
+  ModoAnterior = -1;
+}
+
+string ultimaMensagem = "";
+void EnviarMensagem(string mensagemEnvio)
+{
+  if(strcmp(ultimaMensagem, mensagemEnvio) != 0)
+  {
+    enviarMensagem = 1;
+  }
+  else
+  {
+    enviarMensagem = 0;
+  }
+  
+  string mensagem = "";
+  numTentativasReenvio = 0;
+  if(componenteComboio == MESTRE)
+  {
+    if(numTentativasReenvio == 0 && enviarMensagem == 1)
+    {
+      int numConexaoEnvio, numMailBoxEnvio, numMailBoxReceb;
+      for(int lp = 0; lp < 2;)
+      {
+        Off(OUT_AC);
+        numConexaoEnvio = CONN_BT1 + lp;
+        numMailBoxEnvio = MAILBOX3;
+        numMailBoxReceb = MAILBOX1 + lp;
+        BluetoothStatus(numConexaoEnvio);
+        SendRemoteString(numConexaoEnvio, numMailBoxEnvio, mensagemEnvio);
+        SendRemoteString(numConexaoEnvio, numMailBoxEnvio, mensagemEnvio);
+        numTotalMsgEnviadas++;
+        TextOut(0, LCD_LINE7, "Env: " + NumToStr(numTotalMsgEnviadas));
+
+        Wait(500);
+        //ReceiveMessage(numMailBoxReceb, true, mensagem);
+        
+        /*ReceiveMessage(numMailBoxReceb, true, mensagem);
+        if(strlen(mensagem) > 0)
+        {
+          numTotalMsgRecebidas++;
+          if(strcmp("OKK", mensagem) == 0)
+          {
+            lp++;
+          }
+          else
+          {
+            numTotalMsgNaoInt++;
+          }
+        }*/
+        lp++;
+      }
+    }
+    ultimaMensagem = mensagemEnvio;
+  }
+}
+
+void ReceberMensagem()
+{
+  string mensagem = "";
+  if(componenteComboio == MESTRE)
+  {
+    //MESTRE
+    
+    // Neste modelo o MESTRE n�o l� mensagem. Somente envia.
+    BluetoothStatus(CONN_BT1);
+    BluetoothStatus(CONN_BT2);
+
+    TextOut(0, LCD_LINE8, "Rec: " + NumToStr(numTotalMsgRecebidas) + "   NI: " + NumToStr(numTotalMsgNaoInt));
+  }
+  else
+  {
+    // ESCRAVO
+    int numMailBoxEnvio, numMailBoxLeitura;
+    numMailBoxLeitura = MAILBOX3;
+    numMailBoxEnvio = MAILBOX1 + escravoPonta;
+    BluetoothStatus(CONN_BT0);
+    ReceiveMessage(numMailBoxLeitura, true, mensagem);
+    if(strlen(mensagem) > 0)
+    {
+      numTotalMsgRecebidas++;
+      if(strcmp("PAR", mensagem) == 0)
+      {
+        LIG_MOTORES = 0;
+        SendRemoteString(CONN_BT0, numMailBoxEnvio, "OKK");
+        Wait(200);
+      }else if(strcmp("INI", mensagem) == 0)
+      {
+        LIG_MOTORES = 1;
+        SendRemoteString(CONN_BT0, numMailBoxEnvio, "OKK");
+        Wait(1000 - (500 * escravoPonta));// Se n�o for o escravo ponta. Aguarde mais um pouquinho.
+      }else if(strcmp("APR", mensagem) == 0 || strcmp("AP2", mensagem) == 0)
+      {
+        SendRemoteString(CONN_BT0, numMailBoxEnvio, "OKK");
+        Wait(200);
+      }
+      else
+      {
+        numTotalMsgNaoInt++;
+      }
+    }
+  }
+  TextOut(0, LCD_LINE8, "Rec: " + NumToStr(numTotalMsgRecebidas) + "   NI: " + NumToStr(numTotalMsgNaoInt));
+}
+
+
+void DefinirCor(string mensagem, int indexCor )
+{
+  int botaoPress = 0;
+  ClearScreen();
+  while(botaoPress == 0)
+  {
+    SysColorSensorRead(csrt);
+    RGB_COR = csrt.NormalizedArray;
+
+    TextOut(0, LCD_LINE1, mensagem);
+    NumOut(10,LCD_LINE2, RGB_COR[0]);
+    NumOut(10,LCD_LINE3, RGB_COR[1]);
+    NumOut(10,LCD_LINE4, RGB_COR[2]);
+    setCor(indexCor, RGB_COR[0], RGB_COR[1], RGB_COR[2]);
+    Wait(50);
+    if(ButtonPressed(BTNCENTER))
+    {
+      while(ButtonPressed(BTNCENTER));
+      botaoPress = 1;
+    }
+  }
+  Wait(300);
+}
+
+
+task main()
+{
+  // Definições iniciais
+  ClearScreen();
+
+  // Sendor sonar
+  SetSensorLowspeed(_SENSOR_SONAR);
+
+  // Sensor de cor
+  SetSensorColorFull(_SENSOR_COR);
+  csrt.Port = _SENSOR_COR;
+  
+  LimparMensagem();
+  
+  // Definir as cores de forma personalizada
+  // Cor Esquerda
+  DefinirCor("Escolha Cor ESQ", 0);
+
+  // Cor Direita
+  DefinirCor("Escolha Cor DIR", 1);
+  
+  // PARADA
+  DefinirCor("Escolha Cor PARADA", 2);
+  
+  Wait(800);
+  ClearScreen();
+  
+  // Definindo se é mestre ou escravo
+  ClearScreen();
+  TextOut(0, LCD_LINE1, "Escolha:");
+  TextOut(0, LCD_LINE2, "Esq MESTRE");
+  TextOut(0, LCD_LINE3, "Dir ESCRAVO");
+
+  while(!ButtonPressed(BTNLEFT) && !ButtonPressed(BTNRIGHT));
+
+  while(componenteComboio == -1)
+  {
+    if(ButtonPressed(BTNLEFT))
+    {
+      componenteComboio = MESTRE;
+    }
+    
+    if(ButtonPressed(BTNRIGHT))
+    {
+      componenteComboio = ESCRAVO;
+    }
+  }
+  
+  // Duas variáveis para controlar o envio de mensagem de OK.
+  CommBTOnOffType bt;
+  int novaTentativa = 0;
+  string mensagemInicio = "";
+  if(componenteComboio == MESTRE)
+  {
+    // CODIGO DO MESTE
+    // realizar Conexao com o escravo
+    int BTerrorCode;
+    LIG_MOTORES = 1;
+    ClearScreen();
+    TextOut(0, LCD_LINE1, "-- " + BrickDataName() + "--");
+    TextOut(0, LCD_LINE2, "Conectar escravos:");
+    
+    // Devemos ligar o Bluetooth
+    bt.PowerState = true;
+    SysCommBTOnOff(bt);
+    if (bt.Result != NO_ERR)
+    {
+      TextOut(0, LCD_LINE1, "Falha ao ligar o BLUETOOTH!");
+      Wait(SEC_10);
+    }
+    else
+    {
+      LimparMensagem();
+      
+      //Conectando Escravo 01
+      TextOut(0, LCD_LINE3, ROBO_ESCRAVO);
+      if(ConectarEscravo(ROBO_ESCRAVO))
+      {
+        TextOut(50, LCD_LINE3, "OK");
+      }
+      else
+      {
+        TextOut(50, LCD_LINE3, "!err");
+      }
+      
+      //Conectando Escravo 02
+      TextOut(0, LCD_LINE4, ROBO_ESCRAVO2);
+      if(ConectarEscravo(ROBO_ESCRAVO2))
+      {
+        TextOut(50, LCD_LINE4, "OK");
+      }
+      else
+      {
+        TextOut(50, LCD_LINE4, "Err!");
+      }
+      
+      // Aguardo de mensagem de EXITO entre as partes
+      LimparMensagem();
+      int numConexao;
+      for(int lp = 0; lp < numEscravos; lp++)
+      { 
+        novaTentativa = 0;
+        mensagemInicio = "";
+        while(strlen(mensagemInicio) == 0 && novaTentativa < 20)
+        {
+          if(novaTentativa % 5 == 0)
+          {
+            numConexao = CONN_BT1 + lp;
+            if(lp + 1 < numEscravos)
+            {
+              SendRemoteString(numConexao, MAILBOX3, "APR");
+            }
+            else
+            {
+              SendRemoteString(numConexao, MAILBOX3, "AP2");
+            }
+          }
+          Wait(500);
+          ReceiveMessage(MAILBOX1, true, mensagemInicio);
+          if(StrLen(mensagemInicio) > 0)
+          {
+            if(strcmp("FLU",mensagemInicio) == 0)
+            {
+              mensagemInicio = "";
+            }
+            else
+            {
+              TextOut(65, LCD_LINE3 + (lp * -8), "OK");
+            }
+          }
+
+          novaTentativa++;
+        }
+        
+        if(novaTentativa >= 20)
+        {
+          TextOut(65, LCD_LINE3 + (lp * -8), "Err!");
+        }
+        mensagemInicio = "";
+      }
+    }
+  }
+
+if(componenteComboio == ESCRAVO)
+{
+  //CODIGO DO ESCRAVO
+  
+  // Devemos ligar o Bluetooth
+  bt.PowerState = true;
+  SysCommBTOnOff(bt);
+  if (bt.Result != NO_ERR)
+  {
+    TextOut(0, LCD_LINE1, "Falha ao ligar o BLUETOOTH!");
+    Wait(SEC_10);
+  }
+  else
+  {
+    int mailBox = 0;
+    ClearScreen();
+    string nomeBrick = BrickDataName();
+    TextOut(0, LCD_LINE1, nomeBrick);
+    TextOut(0, LCD_LINE2, "Aguardando MESTRE --");
+    TextOut(0, LCD_LINE3, ROBO_MESTRE);
+    int BTStatus = -1;
+    while(BTStatus != 0)
+    {
+      BTStatus = BluetoothStatus(CONN_BT0);
+      TextOut(0, LCD_LINE3, "BT Status Code: ");
+      ClearLine(LCD_LINE4);
+      NumOut(0, LCD_LINE4, BTStatus);
+      Wait(500);
+    }
+    LimparMensagem();
+    // Mensagem de EXITO DO MESTRE
+    novaTentativa = 0;
+    while(StrLen(mensagemInicio) == 0)
+    {
+      ReceiveMessage(MAILBOX3, true, mensagemInicio);
+      if(StrLen(mensagemInicio) > 0)
+      {
+        if(strcmp(mensagemInicio,"APR") == 0)
+        {
+          SendRemoteString(CONN_BT0, MAILBOX1, "OKK");
+          TextOut(0, LCD_LINE4, "  Conectado!");
+        }
+        if(strcmp(mensagemInicio,"AP2") == 0)
+        {
+          SendRemoteString(CONN_BT0, MAILBOX1, "OKK");
+          TextOut(0, LCD_LINE4, "  Conn PONTA!");
+          escravoPonta = 1;
+        }
+      }
+
+      Wait(210);
+      novaTentativa++;
+      if(novaTentativa % 5 == 0)
+      { //envia um OK a cada 2,5 segs
+        SendRemoteString(CONN_BT0, MAILBOX1, "FLU");
+        LimparMensagem();
+      }
+    }
+
+    ReceiveMessage(MAILBOX2, true, mensagemInicio);
+  }
+}
+
+LimparMensagem();
+
+int BTStatus1;
+int BTStatus2;
+int valorSensorSonar = 0;
+while(true)
+{
+  // Faco o que preciso fazer
+   if(LIG_MOTORES == 0)
+    {
+      ModoOperacao = 0;
+      ModoAnterior = -1;
+    }
+  if(ModoAnterior != ModoOperacao)
+  {
+    switch(ModoOperacao)
+    {
+    case 0:
+      Off(OUT_AC);
+      Wait(30);
+      break;
+
+    case 1:
+      OnFwd(OUT_AC, VELOCIDADE);
+      break;
+
+    case 2:
+      OnFwd(OUT_A, POT_CURVA);
+      OnRev(OUT_C, POT_CURVA);
+      break;
+
+    case 3:
+      OnFwd(OUT_C, POT_CURVA);
+      OnRev(OUT_A, POT_CURVA);
+      break;
+    }
+    ModoAnterior = ModoOperacao;
+  }
+
+  if(componenteComboio == MESTRE)
+  {
+   BTStatus1 = BluetoothStatus(CONN_BT1);
+   BTStatus2 = BluetoothStatus(CONN_BT2);
+   MostrarBTStatusCode2(BTStatus1);
+   MostrarBTStatusCode(BTStatus2);
+  }
+  else
+  {
+   BTStatus1 = BluetoothStatus(CONN_BT0);
+   MostrarBTStatusCode(BTStatus1);
+  }
+
+  if(LIG_MOTORES == 0)
+  {
+    TextOut(0, LCD_LINE2, "DESLIGADO   ");
+  }
+  else
+  {
+    TextOut(0, LCD_LINE2, "LIGADO     ");
+  }
+  
+  valorSensorSonar = SensorUS(_SENSOR_SONAR)
+  TextOut(0, LCD_LINE3, "SON: " + NumToStr(valorSensorSonar) + "   ");
+
+  // Decido o que vou fazer!
+  // Precedencia estar parado ou nao
+  if(componenteComboio == MESTRE)
+  {
+
+  if(valorSensorSonar < LIMIAR_PROX)
+  {
+    TextOut(10, LCD_LINE4, "PAREI         ");
+
+    EnviarMensagem("PAR");
+    ModoOperacao = 0;
+    ModoAnterior = -1;
+    ReceberMensagem();
+  }
+  else
+  {
+    ModoOperacao = 1;
+  }
+  
+  }
+
+  if(ModoOperacao != 0 || componenteComboio == ESCRAVO)
+  {
+
+    EnviarMensagem("INI");
+
+    ReceberMensagem();
+    
+    tempoParado = 0;
+    int LeituraAtual = 0;
+    int NUM_COR = 0;
+    int lengthArray = NUMCORES + 1;
+    ArrayInit(CORES, 0, lengthArray);
+    while(LeituraAtual < NUMERO_LEITURAS)
+    {
+      SysColorSensorRead(csrt);
+      RGB_COR = csrt.NormalizedArray;
+      
+      NUM_COR = getCor(RGB_COR[0],RGB_COR[1], RGB_COR[2]);
+      TextOut(50, LCD_LINE3, NumToStr(NUM_COR) + "   ");
+      // 2 = sem cor!
+      
+      CORES[NUM_COR]++;
+      LeituraAtual++;
+    }
+
+    // Verificar qual a cor mais lida. Desta maneira o sistema permite
+    // pequenos erros
+    switch(IndexValorMaximo(CORES, NUMCORES + 1))
+    {
+    case 0:
+      UltimaCorLida = 1;
+      TextOut(0, LCD_LINE4, "Cor ESQUERDA");
+      ModoOperacao = 1;
+      break;
+
+    case 1:
+      UltimaCorLida = 2;
+      TextOut(0, LCD_LINE4, "Cor DIREITA ");
+      ModoOperacao = 1;
+      break;
+    case 2: // ModoDeParada
+      TextOut(0, LCD_LINE4, "Cor PARADA  ");
+      ModoOperacao = 0;
+      ModoAnterior = -1;
+      break;
+
+padrao:
+      ModoAnterior = -1;
+      
+    default:
+      TextOut(10, LCD_LINE4, "Outra COR      ");
+      if(UltimaCorLida == 1)
+      {
+        if(sentido == INDO)
+        ModoOperacao = 3; // virar a esquerda
+        else
+        ModoOperacao = 2;
+      }
+      else
+      {
+        if(sentido == INDO)
+        ModoOperacao = 2; // virar a direita
+        else
+        ModoOperacao = 3;
+      }
+    }
+  }
+}
+}
+
+
+

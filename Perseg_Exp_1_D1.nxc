@@ -1,0 +1,229 @@
+/*  #define
+ INPUT_BLACKCOLOR 1
+ INPUT_BLUECOLOR 2
+ INPUT_GREENCOLOR 3
+ INPUT_YELLOWCOLOR 4
+ INPUT_REDCOLOR 5
+ INPUT_WHITECOLOR 6
+*/
+
+// definiçõs básicas
+#define VELOCIDADE 75
+#define CURVA 40
+#define NUMCORES 2 // vermelho - preto
+#define ARRAYCORES 4
+
+// Definições de proximidade
+#define _SENSOR_SONAR IN_1
+#define LIMIAR_PROX 20
+#define LIMIAR_COR 50   // Considerar RANGE * 2
+
+// Definições Sensor de cor
+#define _SENSOR_COR IN_3
+#define NUMERO_LEITURAS 20
+
+
+int UltimaCorLida= 1; // PRETO
+int CORES[NUMCORES + 1]; // considerar o ser Cor
+int RGB_COR[ARRAYCORES];
+
+int ARRAY_COR[ARRAYCORES * NUMCORES];
+
+int ModoOperacao = 0;
+int ModoAnterior  = 0;
+
+// onde Modo de operação será a enumeracao
+// 0 = Parado
+// 1 = Andando a frente
+// 2 = Virando para a esquerda
+// 3 = Virando para a direita
+
+inline void setCor(int corNum, int val1, int val2, int val3)
+{
+  int pivo = corNum * ARRAYCORES;
+  ARRAY_COR[pivo] = val1;
+  ARRAY_COR[pivo + 1] = val2;
+  ARRAY_COR[pivo + 2] = val3;
+}
+
+inline int getCor(int val1, int val2, int val3)
+{
+  int lp;
+  for( lp = 0; lp < NUMCORES; lp++)
+  {
+    int pivo = lp * ARRAYCORES;
+    if(ARRAY_COR[pivo] - LIMIAR_COR <= val1 && val1 <= ARRAY_COR[pivo] + LIMIAR_COR){
+      if(ARRAY_COR[pivo + 1] - LIMIAR_COR <= val2 && val2 <= ARRAY_COR[pivo + 1] + LIMIAR_COR){
+        if(ARRAY_COR[pivo + 2 ] - LIMIAR_COR <= val3 && val3 <= ARRAY_COR[pivo + 2] + LIMIAR_COR){
+          return lp;
+        }
+      }
+    }
+  }
+  return lp;
+}
+
+inline int IndexValorMaximo(int array[], int numElemen)
+{
+    int lp;
+    int valorMax = 0;
+    int indexValorMax = 0;
+    for(lp = 0; lp < numElemen; lp++)
+    {
+      if(array[lp] > valorMax)
+      {
+        valorMax = array[lp];
+        indexValorMax = lp;
+      }
+    }
+
+    return indexValorMax;
+}
+
+task main()
+{
+  // Definições iniciais
+  ClearScreen();
+  
+  // Sendor sonar
+  SetSensorLowspeed(_SENSOR_SONAR);
+
+  // Sensor de cor
+  SetSensorColorFull(_SENSOR_COR);
+  ColorSensorReadType csrt;
+  csrt.Port = _SENSOR_COR;
+  
+  // Definir as cores de forma personalizada
+  int botaoPress = 0;
+  while(botaoPress == 0)
+  {
+    SysColorSensorRead(csrt);
+    RGB_COR = csrt.NormalizedArray;
+
+    TextOut(0, LCD_LINE1, "Escolha o Vermelho");
+    NumOut(10,LCD_LINE2, RGB_COR[0]);
+    NumOut(10,LCD_LINE3, RGB_COR[1]);
+    NumOut(10,LCD_LINE4, RGB_COR[2]);
+    setCor(0, RGB_COR[0], RGB_COR[1], RGB_COR[2]);
+    Wait(50);
+    if(ButtonPressed(BTNCENTER))
+    {
+      while(ButtonPressed(BTNCENTER));
+      botaoPress = 1;
+    }
+  }
+
+  Wait(300);
+  ClearScreen();
+
+  // PRETO
+  botaoPress = 0;
+  while(botaoPress == 0)
+  {
+    SysColorSensorRead(csrt);
+    RGB_COR = csrt.NormalizedArray;
+
+    TextOut(0, LCD_LINE1, "Escolha o Preto");
+    NumOut(10,LCD_LINE2, RGB_COR[0]);
+    NumOut(10,LCD_LINE3, RGB_COR[1]);
+    NumOut(10,LCD_LINE4, RGB_COR[2]);
+    setCor(1, RGB_COR[0], RGB_COR[1], RGB_COR[2]);
+    Wait(50);
+    if(ButtonPressed(BTNCENTER))
+    {
+      while(ButtonPressed(BTNCENTER));
+      botaoPress = 1;
+    }
+  }
+
+  ClearScreen();
+
+  while(true)
+  {
+  	// Faço o que preciso fazer
+    if(ModoAnterior != ModoOperacao)
+    {
+      switch(ModoOperacao)
+      {
+		    case 0:
+		      Off(OUT_AC);
+		      break;
+
+		    case 1:
+		      OnFwd(OUT_AC, VELOCIDADE);
+		      break;
+
+		    case 2:
+		      OnFwd(OUT_A, CURVA);
+   		    OnRev(OUT_C, CURVA);
+		      break;
+
+		    case 3:
+		      OnFwd(OUT_C, CURVA);
+   		    OnRev(OUT_A, CURVA);
+          break;
+      }
+      ModoAnterior = ModoOperacao;
+    }
+
+    // Decido o que vou fazer!
+    // Precedência estar parado ou não
+    if(SensorUS(_SENSOR_SONAR) < LIMIAR_PROX)
+    {
+      ModoOperacao = 0;
+    }
+    else
+    {
+
+      int LeituraAtual = 0;
+      int NUM_COR = 0;
+      int lengthArray = NUMCORES + 1;
+      ArrayInit(CORES, 0, lengthArray);
+      while(LeituraAtual < NUMERO_LEITURAS)
+      {
+        SysColorSensorRead(csrt);
+        RGB_COR = csrt.NormalizedArray;
+        
+        NUM_COR = getCor(RGB_COR[0],RGB_COR[1], RGB_COR[2]);
+        TextOut(10, LCD_LINE2, NumToStr(NUM_COR) + "   ");
+        // 2 = sem cor!
+        
+        CORES[NUM_COR]++;
+        LeituraAtual++;
+      }
+
+      // Verificar qual a cor mais lida. Desta maneira o sistema permite
+      // pequenos erros
+      
+      switch(IndexValorMaximo(CORES, NUMCORES + 1))
+      {
+        case 0:
+          UltimaCorLida = 1;
+          TextOut(10, LCD_LINE1, "Cor Vermelha   ");
+          ModoOperacao = 1;
+          break;
+
+        case 1:
+          UltimaCorLida = 2;
+          TextOut(10, LCD_LINE1, "Cor Preto ");
+          ModoOperacao = 1;
+          break;
+
+        default:
+          TextOut(10, LCD_LINE1, "Outra COR      ");
+          if(UltimaCorLida == 1)
+          {
+            ModoOperacao = 3; // virar a esquerda
+          }
+          else
+          {
+            ModoOperacao = 2; // virar a direita
+          }
+      }
+    }
+  }
+}
+
+
+
+
